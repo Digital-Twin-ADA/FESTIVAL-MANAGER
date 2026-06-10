@@ -1,65 +1,32 @@
 version: '3.8'
 
 services:
-  postgres-db:
-    image: postgres:16-alpine
-    container_name: twin-postgres
+  stage-server-1:
+    build: .
     ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_DB: digital_twin_db
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: supersecretpassword
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d digital_twin_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  central-server:
-    build:
-      context: ./twin_central_server
-      dockerfile: Dockerfile
-    container_name: twin-central-server
-    ports:
-      - "8080:8080"
-    environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/digital_twin_db
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: supersecretpassword
-      SPRING_FLYWAY_ENABLED: "true"
-    depends_on:
-      postgres-db:
-        condition: service_healthy
-
-  stage-server-main:
-    build:
-      context: ./twin_stage_server
-      dockerfile: Dockerfile
-    container_name: twin-stage-main
-    ports:
-      - "3001:3000"
+      - "3000:3000"
     environment:
       PORT: "3000"
       STAGE_ID: "1"
       STAGE_NAME: "Main Stage"
-      STAGE_CAPACITY: "1000"
-      CENTRAL_SERVER_URL: "http://central-server:8080"
-    depends_on:
-      - central-server
+      CENTRAL_WS_URL: "ws://central-server:8080/ws-native"
 
-  stage-server-secondary:
-    build:
-      context: ./twin_stage_server
-      dockerfile: Dockerfile
-    container_name: twin-stage-secondary
+  stage-server-2:
+    build: .
     ports:
-      - "3002:3000"
+      - "3001:3001" # Notice the port changed to 3001!
     environment:
-      PORT: "3000"
+      PORT: "3001"
       STAGE_ID: "2"
-      STAGE_NAME: "Dance Arena"
-      STAGE_CAPACITY: "500"
-      CENTRAL_SERVER_URL: "http://central-server:8080"
-    depends_on:
-      - central-server
+      STAGE_NAME: "Second Stage"
+      CENTRAL_WS_URL: "ws://central-server:8080/ws-native"
+
+  stage-server-3:
+    build: .
+    ports:
+      - "3002:3002" # Notice the port changed to 3002!
+    environment:
+      PORT: "3002"
+      STAGE_ID: "3"
+      STAGE_NAME: "Third Stage"
+      CENTRAL_WS_URL: "ws://central-server:8080/ws-native"
