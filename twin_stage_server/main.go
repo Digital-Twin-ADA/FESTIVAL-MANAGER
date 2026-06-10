@@ -20,15 +20,13 @@ type Alert struct {
 	Severity string `json:"severity"`
 }
 
-// Thread-safe map to keep track of connected Android clients
 var clients = make(map[*fiberws.Conn]bool)
 var clientsMutex sync.Mutex
 
-// Connects to the Java Central Server instantly on startup
 func connectToCentral() {
 	centralURL := os.Getenv("CENTRAL_WS_URL")
 	if centralURL == "" {
-		log.Println("ERROR: CENTRAL_WS_URL environment variable is missing")
+		log.Println("ERROR: CENTRAL_WS_URL is missing")
 		return
 	}
 
@@ -38,50 +36,62 @@ func connectToCentral() {
 		log.Printf("Connecting to Central Server at %s...", centralURL)
 		centralConn, _, err := gorillaws.DefaultDialer.Dial(centralURL, nil)
 		if err != nil {
-			log.Println("Error connecting to Central Server, retrying in 5s:", err)
+			log.Println("Error connecting, retrying in 5s:", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// Exact log required by Petronela
-		log.Println("Connected to Central Server WebSocket")
+		log.Println("✅ Connected to Central Server WebSocket")
 
 		for {
 			_, msg, err := centralConn.ReadMessage()
 			if err != nil {
-				log.Println("Disconnected from Central Server:", err)
+				log.Println("❌ Disconnected from Central Server:", err)
 				centralConn.Close()
-				break // Breaks out to retry connection
+				break 
 			}
+
+			// DEBUG: Print EXACTLY what Java sent us
+			log.Printf("📥 RAW DATA RECEIVED FROM JAVA: %s\n", string(msg))
 
 			var alert Alert
 			if err := json.Unmarshal(msg, &alert); err == nil {
 				// Filter the message based on STAGE_ID
 				if alert.StageID == targetStageID {
-					// Broadcast to all connected Android apps
+					log.Printf("🎯 MATCH! Alert is for Stage %d. Forwarding to Android...", targetStageID)
+					
 					clientsMutex.Lock()
+					clientCount := len(clients)
+					if clientCount == 0 {
+						log.Println("⚠️ WARNING: No Android apps are connected right now to receive this!")
+					}
+
 					for client := range clients {
 						if err := client.WriteMessage(fiberws.TextMessage, msg); err != nil {
-							log.Println("Error sending to client, dropping connection:", err)
+							log.Println("Error sending to client:", err)
 							client.Close()
 							delete(clients, client)
+						} else {
+							log.Println("🚀 SUCCESSFULLY SENT TO ANDROID CLIENT!")
 						}
 					}
 					clientsMutex.Unlock()
+				} else {
+					log.Printf("⏭️ IGNORED: Alert is for Stage %d, but I am Stage %d.\n", alert.StageID, targetStageID)
 				}
+			} else {
+				log.Println("❌ JSON PARSE ERROR (Data format from Java is wrong):", err)
 			}
 		}
-		time.Sleep(5 * time.Second) // Wait before trying to reconnect
+		time.Sleep(5 * time.Second) 
 	}
 }
 
 func main() {
 	app := fiber.New()
 
-	// 1. Run the Central Server connection in the background immediately
 	go connectToCentral()
 
-	// 2. Middleware to allow WebSocket connections from Android/Postman
 	app.Use("/ws", func(c *fiber.Ctx) error {
 		if fiberws.IsWebSocketUpgrade(c) {
 			c.Locals("allowed", true)
@@ -90,18 +100,16 @@ func main() {
 		return fiber.ErrUpgradeRequired
 	})
 
-	// 3. Endpoint for Android/Postman to connect and wait for data
 	app.Get("/ws", fiberws.New(func(c *fiberws.Conn) {
-		log.Println("Android/Postman client connected to Stage Server!")
+		log.Println("📱 ANDROID/POSTMAN CLIENT CONNECTED!")
 
 		clientsMutex.Lock()
 		clients[c] = true
 		clientsMutex.Unlock()
 
-		// Keep connection alive until the Android app disconnects
 		for {
 			if _, _, err := c.ReadMessage(); err != nil {
-				log.Println("Android/Postman client disconnected")
+				log.Println("📱 ANDROID/POSTMAN CLIENT DISCONNECTED!")
 				clientsMutex.Lock()
 				delete(clients, c)
 				clientsMutex.Unlock()
@@ -114,6 +122,3 @@ func main() {
 	if port == "" {
 		port = "3000"
 	}
-	log.Printf("Stage Server running on port %s", port)
-	log.Fatal(app.Listen(":" + port))
-}
