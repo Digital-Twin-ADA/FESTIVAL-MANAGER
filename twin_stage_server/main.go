@@ -48,7 +48,7 @@ func connectToCentral() {
 			if err != nil {
 				log.Println("❌ Disconnected from Central Server:", err)
 				centralConn.Close()
-				break 
+				break
 			}
 
 			// DEBUG: Print EXACTLY what Java sent us
@@ -59,15 +59,15 @@ func connectToCentral() {
 				// Filter the message based on STAGE_ID
 				if alert.StageID == targetStageID {
 					log.Printf("🎯 MATCH! Alert is for Stage %d. Forwarding to Android...", targetStageID)
-					
+
 					clientsMutex.Lock()
-					clientCount := len(clients)
-					if clientCount == 0 {
+					if len(clients) == 0 {
 						log.Println("⚠️ WARNING: No Android apps are connected right now to receive this!")
 					}
 
 					for client := range clients {
-						if err := client.WriteMessage(fiberws.TextMessage, msg); err != nil {
+						// Using gorillaws.TextMessage is the safest way to prevent compiler errors
+						if err := client.WriteMessage(gorillaws.TextMessage, msg); err != nil {
 							log.Println("Error sending to client:", err)
 							client.Close()
 							delete(clients, client)
@@ -83,7 +83,7 @@ func connectToCentral() {
 				log.Println("❌ JSON PARSE ERROR (Data format from Java is wrong):", err)
 			}
 		}
-		time.Sleep(5 * time.Second) 
+		time.Sleep(5 * time.Second)
 	}
 }
 
@@ -122,3 +122,6 @@ func main() {
 	if port == "" {
 		port = "3000"
 	}
+	log.Printf("Stage Server running on port %s", port)
+	log.Fatal(app.Listen(":" + port))
+}
