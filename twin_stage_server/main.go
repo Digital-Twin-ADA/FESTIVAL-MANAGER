@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	gorillaws "github.com/gorilla/websocket"
 )
 
+// --- ALERT STRUCTS ---
 type Alert struct {
 	ID         int     `json:"id"`
 	StageID    int     `json:"stageId"`
@@ -23,6 +26,22 @@ type Alert struct {
 	CreatedAt  string  `json:"createdAt"`
 	Resolved   bool    `json:"resolved"`
 	ResolvedAt *string `json:"resolvedAt"`
+}
+
+// --- LOCATION STRUCTS ---
+type AndroidLocationRequest struct {
+	ParticipantID string  `json:"participantId"`
+	Latitude      float64 `json:"latitude"`
+	Longitude     float64 `json:"longitude"`
+	ZoneCode      string  `json:"zoneCode"`
+}
+
+type CentralLocationRequest struct {
+	ParticipantID string  `json:"participantId"`
+	StageID       int     `json:"stageId"`
+	Latitude      float64 `json:"latitude"`
+	Longitude     float64 `json:"longitude"`
+	ZoneCode      string  `json:"zoneCode"`
 }
 
 var clients = make(map[*fiberws.Conn]bool)
@@ -55,7 +74,7 @@ func sendStompFrame(conn *gorillaws.Conn, frame string) error {
 func connectToCentral() {
 	centralURL := os.Getenv("CENTRAL_WS_URL")
 	if centralURL == "" {
-		centralURL = "wss://twin-central-server.onrender.com/ws/websocket"
+		centralURL = "wss://twin-central-server.onrender.com/ws/websocket" // Fallback
 	}
 
 	targetStageID, err := strconv.Atoi(os.Getenv("STAGE_ID"))
@@ -151,8 +170,66 @@ func connectToCentral() {
 func main() {
 	app := fiber.New()
 
+	// 1. Run the STOMP connection to Java in the background
 	go connectToCentral()
 
+	// 2. NEW: Location Forwarding Endpoint
+	app.Post("/api/locations", func(c *fiber.Ctx) error {
+		var req AndroidLocationRequest
+		if err := c.BodyParser(&req); err != nil {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid location payload"})
+		}
+
+		if req.ParticipantID == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "participantId is required"})
+		}
+
+		// Inject zone code if Android didn't provide it
+		if req.ZoneCode == "" {
+			req.ZoneCode = os.Getenv("STAGE_ZONE_CODE")
+		}
+
+		// Grab the current Stage ID
+		targetStageID, _ := strconv.Atoi(os.Getenv("STAGE_ID"))
+
+		// Build the payload for the Java server
+		payload := CentralLocationRequest{
+			ParticipantID: req.ParticipantID,
+			StageID:       targetStageID,
+			Latitude:      req.Latitude,
+			Longitude:     req.Longitude,
+			ZoneCode:      req.ZoneCode,
+		}
+
+		body, _ := json.Marshal(payload)
+
+		centralAPIURL := os.Getenv("CENTRAL_API_URL")
+		if centralAPIURL == "" {
+			centralAPIURL = "https://twin-central-server.onrender.com"
+		}
+
+		// Forward the POST request to Petronela's server
+		resp, err := http.Post(
+			centralAPIURL+"/api/participant-locations",
+			"application/json",
+			bytes.NewReader(body),
+		)
+		if err != nil {
+			log.Println("Error forwarding location:", err)
+			return c.Status(502).JSON(fiber.Map{"error": "failed to forward location to central server"})
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode >= 300 {
+			log.Printf("Central server rejected location, status: %d", resp.StatusCode)
+			return c.Status(resp.StatusCode).JSON(fiber.Map{"error": "central server rejected location"})
+		}
+
+		log.Printf("📍 Successfully forwarded location for %s to Central Server!", req.ParticipantID)
+		return c.Status(201).JSON(fiber.Map{"status": "location forwarded"})
+	})
+
+	// 3. WS Middleware
 	app.Use("/ws", func(c *fiber.Ctx) error {
 		if fiberws.IsWebSocketUpgrade(c) {
 			return c.Next()
@@ -160,6 +237,7 @@ func main() {
 		return fiber.ErrUpgradeRequired
 	})
 
+	// 4. Android WS Endpoint
 	app.Get("/ws", fiberws.New(func(c *fiberws.Conn) {
 		log.Println("Android client connected")
 
